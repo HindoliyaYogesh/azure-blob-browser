@@ -1,4 +1,4 @@
-namespace BlobBrowser.Services.Settings
+﻿namespace BlobBrowser.Services.Settings
 {
     public class BlobOptions
     {

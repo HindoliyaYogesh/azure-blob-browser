@@ -1,33 +1,18 @@
 using Microsoft.AspNetCore.Mvc;
-using BlobBrowser.Services;
 
 namespace BlobBrowser.Controllers
 {
     public class HomeController : Controller
     {
-        private readonly IBlobBrowserService _svc;
-        private readonly ILogger<HomeController> _logger;
-
-        public HomeController(IBlobBrowserService svc, ILogger<HomeController> logger)
+        public IActionResult Index()
         {
-            _svc = svc;
-            _logger = logger;
+            return View();
         }
 
-        public async Task<IActionResult> Index(string? path)
+        public IActionResult Error(string? message)
         {
-            try
-            {
-                var (items, breadcrumbs) = await _svc.ListAsync(path);
-                ViewData["Path"] = path ?? "";
-                ViewData["Breadcrumbs"] = breadcrumbs;
-                return View(items);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error listing blobs");
-                return View("Error", ex.Message);
-            }
+            ViewData["ErrorMessage"] = message ?? "An error occurred.";
+            return View();
         }
     }
 }

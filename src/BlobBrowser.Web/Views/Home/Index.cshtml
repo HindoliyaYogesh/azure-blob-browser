@@ -1,2 +1,338 @@
-<h1>Blob Browser</h1>
-<p>Index View Loaded</p>
+@{
+    ViewData["Title"] = "Browser";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form id="sasForm" class="row g-2">
+            <div class="col-12">
+                <label for="sasInput" class="form-label">Container SAS URL (required)</label>
+                <input type="text" id="sasInput" class="form-control" placeholder="https://<account>.blob.core.windows.net/<container>?<SAS-token>" />
+            </div>
+            <div class="col-auto">
+                <button id="setSasBtn" type="submit" class="btn btn-primary">Set SAS</button>
+            </div>
+            <div class="col">
+                <button id="clearSasBtn" type="button" class="btn btn-outline-secondary">Clear SAS (session)</button>
+            </div>
+            <div class="col-12 mt-2">
+                <div id="sasStatus" class="text-success"></div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form id="searchForm" class="row g-2">
+            <div class="col-md-8">
+                <input type="text" id="searchInput" class="form-control" placeholder="Search (recursive across container). Leave blank to browse directories." />
+            </div>
+            <div class="col-auto">
+                <button id="searchBtn" type="submit" class="btn btn-secondary">Search</button>
+            </div>
+            <div class="col-auto">
+                <button id="clearSearchBtn" type="button" class="btn btn-outline-secondary">Clear</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb" id="breadcrumbList">
+        <li class="breadcrumb-item active">root</li>
+    </ol>
+</nav>
+
+<div class="mb-3">
+    <table class="table table-hover" id="blobTable">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Size</th>
+                <th>Last Modified</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="blobTbody"></tbody>
+    </table>
+
+    <div id="noResults" class="text-muted" style="display:none;">No results.</div>
+
+    <div class="d-grid gap-2 col-6 mx-auto mb-4">
+        <button id="loadMoreBtn" class="btn btn-outline-primary" style="display:none;">Load more</button>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+(function(){
+    const setSasBtn = document.getElementById('setSasBtn');
+    const clearSasBtn = document.getElementById('clearSasBtn');
+    const sasInput = document.getElementById('sasInput');
+    const sasStatus = document.getElementById('sasStatus');
+
+    const searchForm = document.getElementById('searchForm');
+    const searchInput = document.getElementById('searchInput');
+    const clearSearchBtn = document.getElementById('clearSearchBtn');
+
+    const blobTbody = document.getElementById('blobTbody');
+    const breadcrumbList = document.getElementById('breadcrumbList');
+    const loadMoreBtn = document.getElementById('loadMoreBtn');
+    const noResults = document.getElementById('noResults');
+
+    let currentPath = ""; // e.g. "dir1/dir2/"
+    let currentContinuationToken = null;
+    let currentSearch = null;
+    const pageSize = 30;
+
+    // helper
+    async function postJson(url, data) {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        return res.json();
+    }
+
+    async function setSas(sas) {
+        try {
+            const resp = await postJson('/api/blob/setsas', { sasUrl: sas });
+            if (resp.ok) {
+                sasStatus.innerText = "SAS stored in session.";
+                // initial load
+                clearListing();
+                currentPath = "";
+                currentSearch = null;
+                await loadFirstPage();
+            } else if (resp.error) {
+                sasStatus.innerText = "Error: " + resp.error;
+            } else {
+                sasStatus.innerText = "SAS stored.";
+                await loadFirstPage();
+            }
+        } catch (e) {
+            sasStatus.innerText = "Error storing SAS: " + e;
+        }
+    }
+
+    async function clearSas() {
+        // clear session by calling endpoint that clears server session? Simpler: call setsas with empty value and reload.
+        await postJson('/api/blob/setsas', { sasUrl: "" });
+        sasStatus.innerText = "SAS cleared from session.";
+        clearListing();
+    }
+
+    function clearListing() {
+        blobTbody.innerHTML = "";
+        breadcrumbList.innerHTML = '<li class="breadcrumb-item active">root</li>';
+        currentContinuationToken = null;
+        currentPath = "";
+        currentSearch = null;
+        loadMoreBtn.style.display = 'none';
+        noResults.style.display = 'none';
+    }
+
+    function addRow(item) {
+        const tr = document.createElement('tr');
+        const nameTd = document.createElement('td');
+        if (item.isDirectory) {
+            const a = document.createElement('a');
+            a.href = '#';
+            a.innerText = item.name + '/';
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                // navigate into directory
+                currentPath = item.path;
+                currentSearch = null;
+                currentContinuationToken = null;
+                blobTbody.innerHTML = "";
+                updateBreadcrumbsFromPath(currentPath);
+                loadFirstPage();
+            });
+            nameTd.appendChild(a);
+        } else {
+            nameTd.innerText = item.name;
+        }
+
+        const sizeTd = document.createElement('td');
+        sizeTd.innerText = item.size ? item.size.toLocaleString() + ' bytes' : '';
+
+        const modifiedTd = document.createElement('td');
+        modifiedTd.innerText = item.lastModified ? new Date(item.lastModified).toLocaleString() : '';
+
+        const actionTd = document.createElement('td');
+        if (!item.isDirectory) {
+            const a = document.createElement('a');
+            a.href = item.url;
+            a.target = '_blank';
+            a.className = 'btn btn-sm btn-outline-primary';
+            a.innerText = 'View / Download';
+            actionTd.appendChild(a);
+        }
+
+        tr.appendChild(nameTd);
+        tr.appendChild(sizeTd);
+        tr.appendChild(modifiedTd);
+        tr.appendChild(actionTd);
+        blobTbody.appendChild(tr);
+    }
+
+    function updateBreadcrumbsFromPath(path) {
+        breadcrumbList.innerHTML = '';
+        const rootLi = document.createElement('li');
+        rootLi.className = 'breadcrumb-item';
+        const rootA = document.createElement('a');
+        rootA.href = '#';
+        rootA.innerText = 'root';
+        rootA.addEventListener('click', (e) => {
+            e.preventDefault();
+            currentPath = '';
+            currentSearch = null;
+            currentContinuationToken = null;
+            blobTbody.innerHTML = '';
+            updateBreadcrumbsFromPath('');
+            loadFirstPage();
+        });
+        rootLi.appendChild(rootA);
+        breadcrumbList.appendChild(rootLi);
+
+        if (!path) {
+            rootLi.className = 'breadcrumb-item active';
+            rootLi.innerText = 'root';
+            return;
+        }
+
+        const parts = path.split('/').filter(Boolean);
+        let accum = '';
+        parts.forEach((p, idx) => {
+            accum = accum ? accum + p + '/' : p + '/';
+            const li = document.createElement('li');
+            li.className = (idx === parts.length -1) ? 'breadcrumb-item active' : 'breadcrumb-item';
+            if (idx === parts.length -1) {
+                li.innerText = p;
+            } else {
+                const a = document.createElement('a');
+                a.href = '#';
+                a.innerText = p;
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    currentPath = accum;
+                    currentSearch = null;
+                    currentContinuationToken = null;
+                    blobTbody.innerHTML = '';
+                    updateBreadcrumbsFromPath(currentPath);
+                    loadFirstPage();
+                });
+                li.appendChild(a);
+            }
+            breadcrumbList.appendChild(li);
+        });
+    }
+
+    async function loadFirstPage() {
+        currentContinuationToken = null;
+        await loadNextPage();
+    }
+
+    async function loadNextPage() {
+        const params = new URLSearchParams();
+        if (currentPath) params.append('path', currentPath);
+        if (currentContinuationToken) params.append('continuationToken', currentContinuationToken);
+        params.append('pageSize', pageSize);
+        if (currentSearch) params.append('search', currentSearch);
+
+        try {
+            const res = await fetch('/api/blob/list?' + params.toString());
+            if (res.status === 401) {
+                const body = await res.json();
+                sasStatus.innerText = "SAS required: " + (body.error || '');
+                return;
+            }
+            const data = await res.json();
+            if (!data.items || data.items.length === 0) {
+                if (!currentContinuationToken && blobTbody.children.length === 0) {
+                    noResults.style.display = 'block';
+                }
+            } else {
+                noResults.style.display = 'none';
+                data.items.forEach(i => addRow(i));
+            }
+
+            currentContinuationToken = data.continuationToken;
+            if (currentContinuationToken) {
+                loadMoreBtn.style.display = 'block';
+            } else {
+                loadMoreBtn.style.display = 'none';
+            }
+
+            // update breadcrumbs if provided (for directory listing)
+            if (data.breadcrumbs && data.breadcrumbs.length > 0) {
+                breadcrumbList.innerHTML = '';
+                data.breadcrumbs.forEach((b, idx) => {
+                    const li = document.createElement('li');
+                    li.className = idx === data.breadcrumbs.length - 1 ? 'breadcrumb-item active' : 'breadcrumb-item';
+                    if (idx === data.breadcrumbs.length - 1) {
+                        li.innerText = b.name;
+                    } else {
+                        const a = document.createElement('a');
+                        a.href = '#';
+                        a.innerText = b.name;
+                        a.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            currentPath = b.path;
+                            currentSearch = null;
+                            currentContinuationToken = null;
+                            blobTbody.innerHTML = '';
+                            loadFirstPage();
+                        });
+                        li.appendChild(a);
+                    }
+                    breadcrumbList.appendChild(li);
+                });
+            }
+        } catch (err) {
+            console.error(err);
+            sasStatus.innerText = 'Error fetching blobs: ' + err;
+        }
+    }
+
+    // Event handlers
+    document.getElementById('sasForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const sas = sasInput.value.trim();
+        if (!sas) {
+            sasStatus.innerText = "Please paste a SAS URL.";
+            return;
+        }
+        await setSas(sas);
+    });
+
+    clearSasBtn.addEventListener('click', async () => {
+        await clearSas();
+    });
+
+    searchForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        currentSearch = searchInput.value.trim() || null;
+        currentPath = "";
+        currentContinuationToken = null;
+        blobTbody.innerHTML = '';
+        await loadFirstPage();
+    });
+
+    clearSearchBtn.addEventListener('click', (e) => {
+        searchInput.value = '';
+        currentSearch = null;
+    });
+
+    loadMoreBtn.addEventListener('click', async () => {
+        await loadNextPage();
+    });
+
+    // initial: nothing until SAS provided
+})();
+</script>
+}

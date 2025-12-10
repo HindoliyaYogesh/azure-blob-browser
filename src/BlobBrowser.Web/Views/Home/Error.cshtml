@@ -1,0 +1,7 @@
+﻿@{
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var message = (string?)ViewData["ErrorMessage"] ?? "Unknown error";
+}
+
+<h1 class="text-danger">Error</h1>
+<p>@message</p>
